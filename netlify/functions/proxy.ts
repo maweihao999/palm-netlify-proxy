@@ -2,26 +2,13 @@ import { Context } from "@netlify/edge-functions";
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "*",
-  "access-control-allow-headers": "*",
-};
-
-const pickHeaders = (headers: Headers, keys: (string | RegExp)[]): Headers => {
-  const picked = new Headers();
-  for (const key of headers.keys()) {
-    if (keys.some((k) => (typeof k === "string" ? k === key : k.test(key)))) {
-      const value = headers.get(key);
-      if (typeof value === "string") picked.set(key, value);
-    }
-  }
-  return picked;
+  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-allow-headers": "authorization,content-type,accept",
 };
 
 function mapPath(pathname: string): string {
   if (pathname === "/") return pathname;
 
-  // ScreenMemo Custom 默认会请求 /v1/chat/completions 和 /v1/models
-  // 这里改到 Gemini 官方 OpenAI 兼容路径。
   if (pathname === "/v1/chat/completions") {
     return "/v1beta/openai/v1/chat/completions";
   }
@@ -34,42 +21,66 @@ function mapPath(pathname: string): string {
     return "/v1beta/openai" + pathname;
   }
 
-  // 其他 Gemini 原生路径保持原样转发
   return pathname;
+}
+
+function buildRequestHeaders(request: Request): Headers {
+  const headers = new Headers();
+
+  const contentType = request.headers.get("content-type");
+  const authorization = request.headers.get("authorization");
+  const accept = request.headers.get("accept");
+
+  if (contentType) headers.set("content-type", contentType);
+  if (authorization) headers.set("authorization", authorization);
+  if (accept) headers.set("accept", accept);
+
+  // 不要转发 accept-encoding，避免压缩响应被 Netlify 解压后头部还保留。
+  return headers;
+}
+
+function buildResponseHeaders(response: Response): Headers {
+  const headers = new Headers(CORS_HEADERS);
+
+  const contentType = response.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+
+  headers.set("cache-control", "no-store");
+
+  // 不复制 content-encoding / content-length / transfer-encoding。
+  return headers;
 }
 
 export default async (request: Request, context: Context) => {
   if (request.method === "OPTIONS") {
-    return new Response(null, { headers: CORS_HEADERS });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  const { pathname, searchParams } = new URL(request.url);
+  const sourceUrl = new URL(request.url);
 
-  if (pathname === "/") {
-    return new Response("Gemini proxy is running.", {
-      headers: { ...CORS_HEADERS, "content-type": "text/plain" },
+  if (sourceUrl.pathname === "/") {
+    return new Response("Gemini OpenAI proxy is running.", {
+      status: 200,
+      headers: {
+        ...CORS_HEADERS,
+        "content-type": "text/plain; charset=utf-8",
+      },
     });
   }
 
-  const targetPath = mapPath(pathname);
-  const url = new URL(targetPath, "https://generativelanguage.googleapis.com");
+  const targetPath = mapPath(sourceUrl.pathname);
+  const targetUrl = new URL(
+    targetPath,
+    "https://generativelanguage.googleapis.com",
+  );
 
-  searchParams.forEach((value, key) => {
-    url.searchParams.append(key, value);
+  sourceUrl.searchParams.forEach((value, key) => {
+    targetUrl.searchParams.append(key, value);
   });
 
-  const headers = pickHeaders(request.headers, [
-    "content-type",
-    "authorization",
-    "x-goog-api-client",
-    "x-goog-api-key",
-    "accept",
-    "accept-encoding",
-  ]);
-
-  const response = await fetch(url, {
+  const response = await fetch(targetUrl, {
     method: request.method,
-    headers,
+    headers: buildRequestHeaders(request),
     body:
       request.method === "GET" || request.method === "HEAD"
         ? undefined
@@ -79,9 +90,6 @@ export default async (request: Request, context: Context) => {
 
   return new Response(response.body, {
     status: response.status,
-    headers: {
-      ...CORS_HEADERS,
-      ...Object.fromEntries(response.headers),
-    },
+    headers: buildResponseHeaders(response),
   });
 };
