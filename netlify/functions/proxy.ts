@@ -9,16 +9,25 @@ const CORS_HEADERS: Record<string, string> = {
 function mapPath(pathname: string): string {
   if (pathname === "/") return pathname;
 
+  // Google's OpenAI-compatible base is /v1beta/openai (no trailing /v1).
   if (pathname === "/v1/chat/completions") {
-    return "/v1beta/openai/v1/chat/completions";
+    return "/v1beta/openai/chat/completions";
   }
 
   if (pathname === "/v1/models") {
-    return "/v1beta/openai/v1/models";
+    return "/v1beta/openai/models";
   }
 
   if (pathname.startsWith("/v1/")) {
-    return "/v1beta/openai" + pathname;
+    return "/v1beta/openai" + pathname.slice(3);
+  }
+
+  if (pathname === "/chat/completions") {
+    return "/v1beta/openai/chat/completions";
+  }
+
+  if (pathname === "/models") {
+    return "/v1beta/openai/models";
   }
 
   return pathname;
